@@ -16,6 +16,7 @@ ENDPOINTS = {
     "textile_products":  f"{BASE_URL}/textile/products",
     "textile_countries": f"{BASE_URL}/textile/countries",
     "textile_trims":     f"{BASE_URL}/textile/trims",
+    "textile_simulator_detailed": f"{BASE_URL}/textile/simulator/detailed",
 }
 
 # Pays fallback quand un pays n'est pas disponible pour une étape

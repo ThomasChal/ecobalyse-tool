@@ -5,194 +5,212 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 from config import IMPACT_LABELS, MAX_MATERIALS
 
+COLOR_HEADER     = "1F4E79"
+COLOR_REQUIRED   = "D9E1F2"
+COLOR_OPTIONAL   = "EEF3F9"
+COLOR_REF_HEADER = "2E7D32"
+COLOR_API_HEADER = "4A235A"
+COLOR_API_BG     = "F5EEF8"
+COLOR_OUTPUT_OK  = "E8F5E9"
+COLOR_OUTPUT_ERR = "FFCCCC"
+COLOR_OUTPUT_FALL= "FFF9C4"
 
-# --- COULEURS POUR LA MISE EN FORME ---
-COLOR_HEADER     = "1F4E79"  # bleu foncé
-COLOR_REQUIRED   = "D9E1F2"  # bleu clair — champs obligatoires
-COLOR_OPTIONAL   = "EEF3F9"  # bleu très clair — champs optionnels
-COLOR_REF        = "E2EFDA"  # vert clair — onglets de référence
-COLOR_OUTPUT     = "FFF2CC"  # jaune clair — résultats
-COLOR_ERROR      = "FFCCCC"  # rouge clair — erreurs
-
-
-# --- GÉNÉRATION DU TEMPLATE EXCEL ---
 
 def generate_template(materials: list, products: list, countries: list) -> str:
-    """
-    Génère le fichier Excel template avec :
-    - un onglet INPUT pré-formaté avec validations
-    - des onglets de référence (matières, produits, pays)
-    Retourne le chemin du fichier généré.
-    """
     wb = Workbook()
-
-    _create_input_sheet(wb, materials, products, countries)
-    _create_ref_sheet(wb, "REF_MATERIALS", ["uuid", "nom"], 
-                      [(m["id"], m["name"]) for m in materials])
-    _create_ref_sheet(wb, "REF_PRODUCTS", ["id", "nom"],
-                      [(p["id"], p["name"]) for p in products])
-    _create_ref_sheet(wb, "REF_COUNTRIES", ["code", "nom"],
-                      [(c["code"], c["name"]) for c in countries])
-
-    # Supprime la feuille vide créée par défaut
+    _create_ref_materials(wb, materials)
+    _create_ref_products(wb, products)
+    _create_ref_countries(wb, countries)
+    _create_saisie_sheet(wb, materials, products, countries)
+    _create_api_input_sheet(wb)
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
-
+    wb.move_sheet("SAISIE", offset=-wb.sheetnames.index("SAISIE"))
     path = "ecobalyse_template.xlsx"
     wb.save(path)
     return path
 
 
-def _create_input_sheet(wb, materials, products, countries):
-    ws = wb.create_sheet("TEXTILE_INPUT")
+def _ref_header(ws, headers):
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF", name="Arial")
+        c.fill = PatternFill("solid", fgColor=COLOR_REF_HEADER)
+        c.alignment = Alignment(horizontal="center")
 
-    # Construction des colonnes
-    columns = [
-        ("product_name",      "Nom du produit",              True),
-        ("product",           "Type de produit (id)",        True),
-        ("mass",              "Masse (kg)",                  True),
+
+def _create_ref_materials(wb, materials):
+    ws = wb.create_sheet("REF_MATERIALS")
+    _ref_header(ws, ["Nom (lisible)", "UUID (API)"])
+    for i, m in enumerate(materials, start=2):
+        ws.cell(i, 1, m["name"])
+        ws.cell(i, 2, m["id"])
+    ws.column_dimensions["A"].width = 38
+    ws.column_dimensions["B"].width = 38
+
+
+def _create_ref_products(wb, products):
+    ws = wb.create_sheet("REF_PRODUCTS")
+    _ref_header(ws, ["Nom (lisible)", "ID (API)"])
+    for i, p in enumerate(products, start=2):
+        ws.cell(i, 1, p["name"])
+        ws.cell(i, 2, p["id"])
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 20
+
+
+def _create_ref_countries(wb, countries):
+    ws = wb.create_sheet("REF_COUNTRIES")
+    _ref_header(ws, ["Nom (lisible)", "Code ISO (API)"])
+    for i, c in enumerate(countries, start=2):
+        ws.cell(i, 1, c["name"])
+        ws.cell(i, 2, c["code"])
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 15
+
+
+def _get_saisie_columns():
+    cols = [
+        ("product_name",  "Nom du produit",  True),
+        ("product_label", "Catégorie",        True),
+        ("mass",          "Masse (kg)",        True),
     ]
     for i in range(1, MAX_MATERIALS + 1):
-        req = (i == 1)  # seule la première matière est obligatoire
-        columns += [
-            (f"mat{i}_id",      f"Matière {i} (uuid)",         req),
-            (f"mat{i}_share",   f"Matière {i} part (0-1)",     req),
-            (f"mat{i}_country", f"Matière {i} pays",           False),
+        req = (i == 1)
+        cols += [
+            (f"mat{i}_label",         f"Matière {i}",         req),
+            (f"mat{i}_share",         f"Matière {i} — Part",  req),
+            (f"mat{i}_country_label", f"Matière {i} — Pays",  False),
         ]
-    columns += [
-        ("countrySpinning",   "Pays Filature",               False),
-        ("countryFabric",     "Pays Tissage",                False),
-        ("countryDyeing",     "Pays Teinture",               False),
-        ("countryMaking",     "Pays Confection",             False),
-        ("fabricProcess",     "Procédé tissage",             False),
-        ("dyeingProcessType", "Type teinture",               False),
-        ("makingComplexity",  "Complexité confection",       False),
-        ("airTransportRatio", "Transport aérien (0-1)",      False),
-        ("makingWaste",       "Perte confection (0-0.4)",    False),
-        ("makingDeadStock",   "Stock dormant (0-0.3)",       False),
-        ("fading",            "Délavage (True/False)",       False),
-        ("upcycled",          "Remanufacturé (True/False)",  False),
-        ("business",          "Type entreprise",             False),
+    cols += [
+        ("countrySpinning_label", "Pays Filature",      False),
+        ("countryFabric_label",   "Pays Tissage",        False),
+        ("countryDyeing_label",   "Pays Ennoblissement", False),
+        ("countryMaking_label",   "Pays Confection",     False),
     ]
+    return cols
 
-    # Écriture des headers
-    for col_idx, (col_id, label, required) in enumerate(columns, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=label)
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor=COLOR_HEADER)
-        cell.alignment = Alignment(horizontal="center", wrap_text=True)
 
-        # Couleur de fond sur les 50 premières lignes selon obligatoire/optionnel
-        fill_color = COLOR_REQUIRED if required else COLOR_OPTIONAL
-        for row in range(2, 52):
-            ws.cell(row=row, column=col_idx).fill = PatternFill("solid", fgColor=fill_color)
+def _create_saisie_sheet(wb, materials, products, countries):
+    ws = wb.create_sheet("SAISIE")
+    columns = _get_saisie_columns()
+    nb_mat     = len(materials) + 1
+    nb_prod    = len(products)  + 1
+    nb_country = len(countries) + 1
 
+    for col_idx, (_, label, required) in enumerate(columns, start=1):
+        c = ws.cell(1, col_idx, label)
+        c.font = Font(bold=True, color="FFFFFF", size=10, name="Arial")
+        c.fill = PatternFill("solid", fgColor=COLOR_HEADER)
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        fill = COLOR_REQUIRED if required else COLOR_OPTIONAL
+        for row in range(2, 102):
+            ws.cell(row, col_idx).fill = PatternFill("solid", fgColor=fill)
+            ws.cell(row, col_idx).font = Font(name="Arial", size=10)
+        ws.column_dimensions[get_column_letter(col_idx)].width = 30 if "label" in _ or _ == "product_name" else 18
+
+    ws.row_dimensions[1].height = 45
+    ws.freeze_panes = "A2"
+
+    col_map = {col[0]: i + 1 for i, col in enumerate(columns)}
+
+    def add_dv(col_id, formula):
+        if col_id not in col_map:
+            return
+        col = get_column_letter(col_map[col_id])
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+        ws.add_data_validation(dv)
+        dv.add(f"{col}2:{col}101")
+
+    add_dv("product_label", f"REF_PRODUCTS!$A$2:$A${nb_prod}")
+    for i in range(1, MAX_MATERIALS + 1):
+        add_dv(f"mat{i}_label",         f"REF_MATERIALS!$A$2:$A${nb_mat}")
+        add_dv(f"mat{i}_country_label", f"REF_COUNTRIES!$A$2:$A${nb_country}")
+    for field in ["countrySpinning_label", "countryFabric_label",
+                  "countryDyeing_label",   "countryMaking_label"]:
+        add_dv(field, f"REF_COUNTRIES!$A$2:$A${nb_country}")
+
+
+def _create_api_input_sheet(wb):
+    ws = wb.create_sheet("API_INPUT")
+    saisie_cols = _get_saisie_columns()
+    saisie_map  = {col[0]: i + 1 for i, col in enumerate(saisie_cols)}
+
+    def S(col_id, row):
+        return f"SAISIE!${get_column_letter(saisie_map[col_id])}{row}"
+
+    api_columns = ["product_name", "product", "mass"]
+    for i in range(1, MAX_MATERIALS + 1):
+        api_columns += [f"mat{i}_id", f"mat{i}_share", f"mat{i}_country"]
+    api_columns += ["countrySpinning", "countryFabric", "countryDyeing", "countryMaking"]
+
+    for col_idx, col_id in enumerate(api_columns, start=1):
+        c = ws.cell(1, col_idx, col_id)
+        c.font = Font(bold=True, color="FFFFFF", size=9, name="Arial")
+        c.fill = PatternFill("solid", fgColor=COLOR_API_HEADER)
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(col_idx)].width = 22
     ws.row_dimensions[1].height = 40
-    ws.freeze_panes = "A2"  # fige la ligne de header
 
-    # Validations de données pour les enums fixes
-    _add_enum_validation(ws, columns, products, countries)
+    for row in range(2, 102):
+        formulas = {
+            "product_name": f"={S('product_name', row)}",
+            "product":      f'=IFERROR(VLOOKUP({S("product_label",row)},REF_PRODUCTS!$A:$B,2,FALSE),"")',
+            "mass":         f"={S('mass', row)}",
+            "countrySpinning": f'=IFERROR(VLOOKUP({S("countrySpinning_label",row)},REF_COUNTRIES!$A:$B,2,FALSE),"")',
+            "countryFabric":   f'=IFERROR(VLOOKUP({S("countryFabric_label",row)},REF_COUNTRIES!$A:$B,2,FALSE),"")',
+            "countryDyeing":   f'=IFERROR(VLOOKUP({S("countryDyeing_label",row)},REF_COUNTRIES!$A:$B,2,FALSE),"")',
+            "countryMaking":   f'=IFERROR(VLOOKUP({S("countryMaking_label",row)},REF_COUNTRIES!$A:$B,2,FALSE),"")',
+        }
+        for i in range(1, MAX_MATERIALS + 1):
+            formulas[f"mat{i}_id"]      = f'=IFERROR(VLOOKUP({S(f"mat{i}_label",row)},REF_MATERIALS!$A:$B,2,FALSE),"")'
+            formulas[f"mat{i}_share"]   = f"={S(f'mat{i}_share', row)}"
+            formulas[f"mat{i}_country"] = f'=IFERROR(VLOOKUP({S(f"mat{i}_country_label",row)},REF_COUNTRIES!$A:$B,2,FALSE),"")'
 
+        for col_idx, col_id in enumerate(api_columns, start=1):
+            if col_id in formulas:
+                c = ws.cell(row, col_idx, formulas[col_id])
+                c.fill = PatternFill("solid", fgColor=COLOR_API_BG)
+                c.font = Font(name="Arial", size=9, color="555555")
 
-def _add_enum_validation(ws, columns, products, countries):
-    """Ajoute des listes déroulantes pour les champs à valeurs fixes."""
-    col_map = {col[0]: idx + 1 for idx, col in enumerate(columns)}
+    ws.freeze_panes = "A2"
 
-    # Produits
-    product_ids = ",".join([p["id"] for p in products])
-    _add_dropdown(ws, col_map["product"], f'"{product_ids}"')
-
-    # Pays pour chaque étape
-    country_codes = ",".join([c["code"] for c in countries])
-    for field in ["countrySpinning", "countryFabric", "countryDyeing", "countryMaking"]:
-        if field in col_map:
-            _add_dropdown(ws, col_map[field], f'"{country_codes}"')
-
-    # Enums fixes
-    _add_dropdown(ws, col_map["fabricProcess"],
-        '"knitting-mix,knitting-fully-fashioned,knitting-integral,knitting-circular,knitting-straight,weaving"')
-    _add_dropdown(ws, col_map["dyeingProcessType"],
-        '"average,continuous,discontinuous"')
-    _add_dropdown(ws, col_map["makingComplexity"],
-        '"very-high,high,medium,low,very-low,not-applicable"')
-    _add_dropdown(ws, col_map["business"],
-        '"small-business,large-business-with-services,large-business-without-services"')
-
-
-def _add_dropdown(ws, col_idx, formula: str):
-    col_letter = get_column_letter(col_idx)
-    dv = DataValidation(type="list", formula1=formula, allow_blank=True)
-    ws.add_data_validation(dv)
-    dv.add(f"{col_letter}2:{col_letter}51")
-
-
-def _create_ref_sheet(wb, name, headers, rows):
-    ws = wb.create_sheet(name)
-    for col_idx, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=header)
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="2E7D32")
-    for row_idx, row in enumerate(rows, start=2):
-        for col_idx, value in enumerate(row, start=1):
-            ws.cell(row=row_idx, column=col_idx, value=value)
-    ws.sheet_state = "visible"
-
-
-# --- LECTURE DU FICHIER INPUT ---
 
 def read_input(file) -> list:
-    """Lit l'onglet TEXTILE_INPUT et retourne une liste de dicts."""
-    df = pd.read_excel(file, sheet_name="TEXTILE_INPUT", dtype=str)
-    df = df.dropna(how="all")  # supprime les lignes complètement vides
+    df = pd.read_excel(file, sheet_name="API_INPUT", dtype=str)
+    df = df.dropna(how="all")
+    df = df[df["product_name"].notna() & (df["product_name"].str.strip() != "")]
     return df.to_dict(orient="records")
 
 
-# --- ÉCRITURE DU FICHIER OUTPUT ---
-
 def write_output(rows_input: list, results: list) -> str:
-    """
-    Génère le fichier Excel de résultats.
-    Chaque ligne = un produit avec ses paramètres + ses scores environnementaux.
-    """
     output_rows = []
-
     for row, result in zip(rows_input, results):
         out = {"product_name": row.get("product_name", "")}
-
         if "error" in result and not result.get("impacts"):
-            # Erreur non récupérée par le fallback
-            out["statut"] = "ERREUR"
+            out["statut"]        = "ERREUR"
             out["erreur_detail"] = str(result["error"])
             out["fallback_note"] = result.get("fallback_note", "")
         else:
-            out["statut"] = "OK"
+            out["statut"]        = "OK"
             out["erreur_detail"] = ""
             out["fallback_note"] = result.get("fallback_note", "")
             impacts = result.get("impacts", {})
             for code, label in IMPACT_LABELS.items():
                 out[label] = impacts.get(code, "")
-
         output_rows.append(out)
 
-    df = pd.DataFrame(output_rows)
+    df   = pd.DataFrame(output_rows)
     path = "ecobalyse_results.xlsx"
-
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="RESULTATS")
         ws = writer.sheets["RESULTATS"]
-
-        # Mise en forme du header
         for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
+            cell.font = Font(bold=True, color="FFFFFF", name="Arial")
             cell.fill = PatternFill("solid", fgColor=COLOR_HEADER)
-
-        # Coloration des lignes en erreur
         for row in ws.iter_rows(min_row=2):
-            if row[1].value == "ERREUR":
-                for cell in row:
-                    cell.fill = PatternFill("solid", fgColor=COLOR_ERROR)
-            elif row[3].value:  # fallback utilisé
-                for cell in row:
-                    cell.fill = PatternFill("solid", fgColor=COLOR_OUTPUT)
-
+            fgColor = COLOR_OUTPUT_ERR if row[1].value == "ERREUR" else (COLOR_OUTPUT_FALL if row[2].value else COLOR_OUTPUT_OK)
+            for cell in row:
+                cell.fill = PatternFill("solid", fgColor=fgColor)
+                cell.font = Font(name="Arial", size=10)
     return path

@@ -5,7 +5,7 @@ from config import API_TOKEN, ENDPOINTS, FALLBACK_COUNTRY
 def _get_headers():
     headers = {"Content-Type": "application/json"}
     if API_TOKEN:
-        headers["token"] = API_TOKEN
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
     return headers
 
 
@@ -39,20 +39,23 @@ def get_trims():
 # --- FONCTION PRINCIPALE DE SIMULATION ---
 
 def simulate_textile(row: dict) -> dict:
-    """
-    Prend une ligne du fichier Excel (dict), appelle l'API Ecobalyse,
-    et retourne les impacts environnementaux.
-
-    En cas d'erreur de pays, retente avec le pays fallback et le note.
-    """
     payload = _build_payload(row)
     result = _call_simulator(payload)
 
-    # Si erreur 400, on tente le fallback pays
     if "error" in result:
-        payload_fallback, fallback_note = _apply_country_fallback(payload)
-        result = _call_simulator(payload_fallback)
-        result["fallback_note"] = fallback_note
+        # On tente jusqu'à 5 fois, en corrigeant un pays invalide à chaque fois
+        fallback_notes = []
+        for _ in range(5):
+            invalid_country = _extract_invalid_country(result["error"])
+            if not invalid_country:
+                break
+            payload, note = _apply_country_fallback(payload, invalid_country)
+            fallback_notes.append(note)
+            result = _call_simulator(payload)
+            if "error" not in result:
+                break
+
+        result["fallback_note"] = " | ".join(fallback_notes) if fallback_notes else ""
     else:
         result["fallback_note"] = ""
 
@@ -60,10 +63,9 @@ def simulate_textile(row: dict) -> dict:
 
 
 def _call_simulator(payload: dict) -> dict:
-    """Appelle l'endpoint /textile/simulator et retourne le résultat ou une erreur."""
     try:
         response = requests.post(
-            ENDPOINTS["textile_simulator"],
+            ENDPOINTS["textile_simulator_detailed"],  # ← changement ici
             json=payload,
             headers=_get_headers()
         )
@@ -76,55 +78,72 @@ def _call_simulator(payload: dict) -> dict:
 
 
 def _build_payload(row: dict) -> dict:
-    """Construit le JSON à envoyer à l'API à partir d'une ligne Excel."""
+    """Construit le JSON à envoyer à l'API — mode réglementaire."""
 
-    # Construction du tableau de matières
+    def is_empty(v):
+        if v is None:
+            return True
+        try:
+            import math
+            if math.isnan(float(v)):
+                return True
+        except (ValueError, TypeError):
+            pass
+        return str(v).strip().lower() in ("", "nan", "none")
+
+    row = {k: v for k, v in row.items() if not is_empty(v)}
+
+    # Matières
     materials = []
-    for i in range(1, 6):  # jusqu'à 5 matières
-        mat_id = row.get(f"mat{i}_id")
+    for i in range(1, 6):
+        mat_id    = row.get(f"mat{i}_id")
         mat_share = row.get(f"mat{i}_share")
         if mat_id and mat_share:
             mat = {"id": str(mat_id), "share": float(mat_share)}
             if row.get(f"mat{i}_country"):
                 mat["country"] = str(row[f"mat{i}_country"])
-            if row.get(f"mat{i}_spinning"):
-                mat["spinning"] = str(row[f"mat{i}_spinning"])
             materials.append(mat)
 
     payload = {
-        "mass": float(row["mass"]),
-        "product": str(row["product"]),
+        "mass":      float(row["mass"]),
+        "product":   str(row["product"]),
         "materials": materials,
     }
 
-    # Ajout des champs optionnels seulement s'ils sont renseignés
-    optional_fields = [
-        "countrySpinning", "countryFabric", "countryDyeing", "countryMaking",
-        "fabricProcess", "dyeingProcessType", "makingComplexity",
-        "airTransportRatio", "makingWaste", "makingDeadStock",
-        "fading", "upcycled", "business",
-    ]
-    for field in optional_fields:
-        value = row.get(field)
-        if value is not None and str(value).strip() != "" and str(value) != "nan":
-            payload[field] = value
+    # Pays des étapes
+    for field in ["countrySpinning", "countryFabric", "countryDyeing", "countryMaking"]:
+        if field in row:
+            payload[field] = str(row[field])
 
     return payload
 
 
-def _apply_country_fallback(payload: dict) -> tuple:
-    """
-    Remplace tous les pays par le pays fallback et génère une note explicative.
-    Retourne le payload modifié et la note.
-    """
-    country_fields = ["countrySpinning", "countryFabric", "countryDyeing", "countryMaking"]
+def _extract_invalid_country(error) -> str:
+    """Extrait le code pays invalide depuis le message d'erreur de l'API."""
+    import re
+    if isinstance(error, dict):
+        for msg in error.values():
+            match = re.search(r"Le code pays (\w+) n'est pas utilisable", str(msg))
+            if match:
+                return match.group(1)
+    match = re.search(r"Le code pays (\w+) n'est pas utilisable", str(error))
+    return match.group(1) if match else None
+
+
+def _apply_country_fallback(payload: dict, invalid_country: str) -> tuple:
+    """Remplace uniquement le pays invalide dans tout le payload."""
     changed = []
+    country_fields = ["countrySpinning", "countryFabric", "countryDyeing", "countryMaking"]
 
     for field in country_fields:
-        if field in payload:
-            original = payload[field]
+        if payload.get(field) == invalid_country:
             payload[field] = FALLBACK_COUNTRY
-            changed.append(f"{field}: {original} → {FALLBACK_COUNTRY}")
+            changed.append(f"{field}: {invalid_country} → {FALLBACK_COUNTRY}")
 
-    note = "FALLBACK PAYS: " + " | ".join(changed) if changed else ""
+    for i, mat in enumerate(payload.get("materials", [])):
+        if mat.get("country") == invalid_country:
+            mat["country"] = FALLBACK_COUNTRY
+            changed.append(f"materials[{i}].country: {invalid_country} → {FALLBACK_COUNTRY}")
+
+    note = f"FALLBACK: {' | '.join(changed)}" if changed else ""
     return payload, note
