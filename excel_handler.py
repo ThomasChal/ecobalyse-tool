@@ -179,7 +179,12 @@ def _create_api_input_sheet(wb):
 def read_input(file) -> list:
     df = pd.read_excel(file, sheet_name="API_INPUT", dtype=str)
     df = df.dropna(how="all")
-    df = df[df["product_name"].notna() & (df["product_name"].str.strip() != "")]
+    # Garde uniquement les lignes avec product_name, product ET mass renseignés
+    df = df[
+        df["product_name"].notna() & (df["product_name"].str.strip() != "") &
+        df["product"].notna()       & (df["product"].str.strip() != "") &
+        df["mass"].notna()          & (df["mass"].str.strip() != "")
+    ]
     return df.to_dict(orient="records")
 
 
