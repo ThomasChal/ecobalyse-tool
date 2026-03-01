@@ -1,7 +1,6 @@
 import os
 import streamlit as st
 
-# Lit le token depuis st.secrets (Streamlit Cloud) ou .env (local)
 try:
     API_TOKEN = st.secrets["ECOBALYSE_TOKEN"]
 except Exception:
